@@ -33,7 +33,6 @@ getgenv().AutoGrabSystem = {
 
 local AG = getgenv().AutoGrabSystem
 
--- Settings System
 local function SaveSettings()
     pcall(function()
         if writefile then
@@ -85,7 +84,7 @@ end
 
 local function findPromptInPodium(podium)
     for _, d in pairs(podium:GetDescendants()) do
-        if d:IsA("ProximityPrompt") and d.Enabled then
+        if d:IsA("ProximityPrompt") then 
             local pos
             if d.Parent:IsA("Attachment") and d.Parent.Parent:IsA("BasePart") then
                 pos = d.Parent.Parent.Position
@@ -182,74 +181,61 @@ local function firePrompt(prompt)
     
     if fireproximityprompt then
         pcall(fireproximityprompt, prompt, 1)
-        return true
     end
     
-    local ok, conns = pcall(getconnections, prompt.Triggered)
-    if ok and conns then
-        for _, c in ipairs(conns) do
-            if c.Function then pcall(c.Function) end
-        end
-        return true
-    end
-    
-    local ok2, conns2 = pcall(getconnections, prompt.PromptButtonHoldBegan)
-    if ok2 and conns2 then
-        for _, c in ipairs(conns2) do
-            if c.Function then pcall(c.Function) end
-        end
-        task.wait(prompt.HoldDuration or 1)
-        local ok3, conns3 = pcall(getconnections, prompt.Triggered)
-        if ok3 and conns3 then
-            for _, c in ipairs(conns3) do
+    task.spawn(function()
+        local ok, conns = pcall(getconnections, prompt.Triggered)
+        if ok and conns then
+            for _, c in ipairs(conns) do
                 if c.Function then pcall(c.Function) end
             end
         end
-        return true
-    end
-    
-    return false
-end
-
-local lastStealCount = 0
-local function detectSteal()
-    local bp = LocalPlayer:FindFirstChild("Backpack")
-    if bp then
-        local count = 0
-        for _, c in pairs(bp:GetChildren()) do
-            if c:IsA("Tool") then count = count + 1 end
-        end
-        local char = LocalPlayer.Character
-        if char then
-            for _, c in pairs(char:GetChildren()) do
-                if c:IsA("Tool") then count = count + 1 end
+        
+        local ok2, conns2 = pcall(getconnections, prompt.PromptButtonHoldBegan)
+        if ok2 and conns2 then
+            for _, c in ipairs(conns2) do
+                if c.Function then pcall(c.Function) end
+            end
+            task.wait(prompt.HoldDuration or 1)
+            local ok3, conns3 = pcall(getconnections, prompt.Triggered)
+            if ok3 and conns3 then
+                for _, c in ipairs(conns3) do
+                    if c.Function then pcall(c.Function) end
+                end
             end
         end
-        if count > lastStealCount then
-            lastStealCount = count
-            return true
-        end
-        lastStealCount = count
-    end
-    return false
+    end)
+    return true
 end
 
-pcall(function()
+local lastTotalTools = 0
+
+local function updateToolCount()
+    local c = 0
     local bp = LocalPlayer:FindFirstChild("Backpack")
-    if bp then
-        for _, c in pairs(bp:GetChildren()) do
-            if c:IsA("Tool") then lastStealCount = lastStealCount + 1 end
-        end
-    end
     local char = LocalPlayer.Character
+    if bp then
+        for _, t in ipairs(bp:GetChildren()) do if t:IsA("Tool") then c = c + 1 end end
+    end
     if char then
-        for _, c in pairs(char:GetChildren()) do
-            if c:IsA("Tool") then lastStealCount = lastStealCount + 1 end
+        for _, t in ipairs(char:GetChildren()) do if t:IsA("Tool") then c = c + 1 end end
+    end
+    return c
+end
+
+lastTotalTools = updateToolCount()
+
+task.spawn(function()
+    while AG.Running do
+        task.wait(0.1)
+        local currentTools = updateToolCount()
+        if currentTools > lastTotalTools then
+            AG.StealCount = AG.StealCount + (currentTools - lastTotalTools)
         end
+        lastTotalTools = currentTools
     end
 end)
 
--- Main steal loop
 local thread = coroutine.create(function()
     while AG.Running do
         local success, err = pcall(function()
@@ -274,34 +260,31 @@ local thread = coroutine.create(function()
             firePrompt(target.prompt)
             
             local startTime = tick()
-            local stolen = false
             while tick() - startTime < AG.StealDuration do
+                if not AG.Active then break end
                 AG.StealProgress = (tick() - startTime) / AG.StealDuration
                 
-                if detectSteal() then
-                    stolen = true
-                    AG.StealCount = AG.StealCount + 1
-                    AG.StealProgress = 1
-                    break
+                if fireproximityprompt then
+                    pcall(fireproximityprompt, target.prompt, 1)
                 end
-                
-                task.wait(1/60) -- 60 FPS
+                task.wait(1/60)
             end
             
-            AG.StealProgress = 1
-            task.wait(0.1)
+            if AG.Active then
+                AG.StealProgress = 1
+                task.wait(0.1)
+            end
             
             AG.IsStealing = false
             AG.CurrentPetName = ""
             AG.StealProgress = 0
         end)
         
-        task.wait(0.15)
+        task.wait(0.05)
     end
 end)
 coroutine.resume(thread)
 
--- Backup loop
 task.spawn(function()
     while AG.Running do
         task.wait(5)
@@ -309,28 +292,31 @@ task.spawn(function()
             thread = coroutine.create(function()
                 while AG.Running do
                     pcall(function()
-                        if AG.Active then
-                            local target = getTarget()
-                            if target and target.prompt and target.prompt.Parent then
-                                AG.IsStealing = true
-                                AG.CurrentPetName = target.petName
-                                firePrompt(target.prompt)
-                                local st = tick()
-                                while tick() - st < AG.StealDuration do
-                                    AG.StealProgress = (tick() - st) / AG.StealDuration
-                                    if detectSteal() then
-                                        AG.StealCount = AG.StealCount + 1
-                                        break
-                                    end
-                                    task.wait(1/60)
+                        if not AG.Active then return end
+                        local target = getTarget()
+                        if target and target.prompt and target.prompt.Parent then
+                            AG.IsStealing = true
+                            AG.CurrentPetName = target.petName
+                            firePrompt(target.prompt)
+                            local st = tick()
+                            while tick() - st < AG.StealDuration do
+                                if not AG.Active then break end
+                                AG.StealProgress = (tick() - st) / AG.StealDuration
+                                if fireproximityprompt then
+                                    pcall(fireproximityprompt, target.prompt, 1)
                                 end
-                                AG.IsStealing = false
-                                AG.CurrentPetName = ""
-                                AG.StealProgress = 0
+                                task.wait(1/60)
                             end
+                            if AG.Active then
+                                AG.StealProgress = 1
+                                task.wait(0.1)
+                            end
+                            AG.IsStealing = false
+                            AG.CurrentPetName = ""
+                            AG.StealProgress = 0
                         end
                     end)
-                    task.wait(0.15)
+                    task.wait(0.05)
                 end
             end)
             coroutine.resume(thread)
@@ -338,7 +324,6 @@ task.spawn(function()
     end
 end)
 
--- GUI
 local gui = LocalPlayer:WaitForChild("PlayerGui")
 local Screen = Instance.new("ScreenGui")
 Screen.Name = "AutoGrabPanel"
@@ -449,7 +434,6 @@ local function updAll()
     nUpd(AG.Active and AG.Mode == "Nearest")
 end
 
--- Initialize visuals from saved settings
 updAll()
 
 hBtn.MouseButton1Click:Connect(function()
@@ -542,7 +526,6 @@ Pct.TextSize = 10
 Pct.TextXAlignment = Enum.TextXAlignment.Right
 Pct.Parent = Bar
 
--- UI Update Loop - 60 FPS
 task.spawn(function()
     while AG.Running and Screen and Screen.Parent do
         Count.Text = tostring(AG.StealCount)
@@ -557,7 +540,6 @@ task.spawn(function()
             Dot.BackgroundColor3 = Status.TextColor3
             PetName.Text = AG.CurrentPetName
         else
-            -- Smooth fade out
             local currentSize = Fill.Size.X.Scale
             if currentSize > 0.01 then
                 Fill.Size = UDim2.new(math.max(0, currentSize - 0.05), 0, 1, 0)
@@ -579,12 +561,10 @@ task.spawn(function()
                 PetName.Text = ""
             end
         end
-        
-        task.wait(1/60) -- 60 FPS
+        task.wait(1/60)
     end
 end)
 
--- Drag
 local drag, ds, sp
 Main.InputBegan:Connect(function(i)
     if i.UserInputType == Enum.UserInputType.MouseButton1 then
