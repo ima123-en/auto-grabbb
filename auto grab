@@ -26,7 +26,7 @@ getgenv().AutoGrabSystem = {
     IsStealing = false,
     StealProgress = 0,
     CurrentPetName = "",
-    StealDuration = 0.9,
+    StealDuration = 0.95,
     StealCount = 0,
     Running = true
 }
