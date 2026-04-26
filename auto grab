@@ -109,10 +109,10 @@ local function getAllTargets()
     local t = {}
     local plots = Workspace:FindFirstChild("Plots")
     if not plots then return t end
-    
+
     for _, plot in pairs(plots:GetChildren()) do
         if isMyPlot(plot) then continue end
-        
+
         for _, desc in pairs(plot:GetDescendants()) do
             if desc:IsA("Model") and Database[desc.Name] then
                 local root = desc:FindFirstChild("HumanoidRootPart") or desc.PrimaryPart
@@ -141,17 +141,17 @@ local function getPriorityTarget()
     if not PS or not PS.SelectedData then return nil end
     local d = PS.SelectedData
     if not d.plot or not d.slot then return nil end
-    
+
     local plots = Workspace:FindFirstChild("Plots")
     if not plots then return nil end
     local plot = plots:FindFirstChild(d.plot)
     if not plot then return nil end
-    
+
     local podiums = plot:FindFirstChild("AnimalPodiums")
     if not podiums then return nil end
     local podium = podiums:FindFirstChild(tostring(d.slot))
     if not podium then return nil end
-    
+
     local prompt, pos = findPromptInPodium(podium)
     if prompt then
         return { prompt = prompt, position = pos, petName = d.name or "?", petValue = d.genValue or 0 }
@@ -162,12 +162,12 @@ end
 local function getTarget()
     local hrp = getHRP()
     if not hrp then return nil end
-    
+
     if AG.Mode == "Priority" then return getPriorityTarget() end
-    
+
     local targets = getAllTargets()
     if #targets == 0 then return nil end
-    
+
     if AG.Mode == "Nearest" then
         local best, min = nil, math.huge
         for _, x in ipairs(targets) do
@@ -186,12 +186,12 @@ end
 
 local function firePrompt(prompt)
     if not prompt or not prompt.Parent then return false end
-    
+
     if fireproximityprompt then
         pcall(fireproximityprompt, prompt, 1)
         return true
     end
-    
+
     local ok, conns = pcall(getconnections, prompt.Triggered)
     if ok and conns then
         for _, c in ipairs(conns) do
@@ -199,7 +199,7 @@ local function firePrompt(prompt)
         end
         return true
     end
-    
+
     local ok2, conns2 = pcall(getconnections, prompt.PromptButtonHoldBegan)
     if ok2 and conns2 then
         for _, c in ipairs(conns2) do
@@ -214,7 +214,7 @@ local function firePrompt(prompt)
         end
         return true
     end
-    
+
     return false
 end
 
@@ -256,6 +256,26 @@ pcall(function()
     end
 end)
 
+local function isServerConfirmedNearPriority()
+    local hrp = getHRP()
+    if not hrp then return false end
+    local prio = getPriorityTarget()
+    if not prio or not prio.position then return false end
+    local hrp2D = Vector2.new(hrp.Position.X, hrp.Position.Z)
+    local prio2D = Vector2.new(prio.position.X, prio.position.Z)
+    local dist = (hrp2D - prio2D).Magnitude
+    if dist > NEAR_PRIORITY_DISTANCE then return false end
+    local stealAttr = LocalPlayer:GetAttribute("Stealing")
+    if stealAttr == true then return true end
+    if prio.prompt and prio.prompt.Parent then
+        local ok, conns = pcall(getconnections, prio.prompt.Triggered)
+        if ok and conns and #conns > 0 then
+            return true
+        end
+    end
+    return false
+end
+
 local thread = coroutine.create(function()
     while AG.Running do
         local success, err = pcall(function()
@@ -265,43 +285,43 @@ local thread = coroutine.create(function()
                 AG.StealProgress = 0
                 return
             end
-            
+
             local target = getTarget()
             if not target or not target.prompt or not target.prompt.Parent then
                 AG.IsStealing = false
                 AG.CurrentPetName = ""
                 return
             end
-            
+
             AG.IsStealing = true
             AG.CurrentPetName = target.petName
             AG.StealProgress = 0
-            
+
             firePrompt(target.prompt)
-            
+
             local startTime = tick()
             local stolen = false
             while tick() - startTime < AG.StealDuration do
                 AG.StealProgress = (tick() - startTime) / AG.StealDuration
-                
+
                 if detectSteal() then
                     stolen = true
                     AG.StealCount = AG.StealCount + 1
                     AG.StealProgress = 1
                     break
                 end
-                
+
                 task.wait(1/60)
             end
-            
+
             AG.StealProgress = 1
             task.wait(0.1)
-            
+
             AG.IsStealing = false
             AG.CurrentPetName = ""
             AG.StealProgress = 0
         end)
-        
+
         task.wait(0.15)
     end
 end)
@@ -439,7 +459,7 @@ local function MakeBtn(name, y)
         TweenService:Create(bg, TweenInfo.new(0.15), {BackgroundColor3 = bgc}):Play()
         TweenService:Create(l, TweenInfo.new(0.15), {TextColor3 = tc}):Play()
     end
-    
+
     return b, upd
 end
 
@@ -462,33 +482,33 @@ updAll()
 updAuto()
 
 hBtn.MouseButton1Click:Connect(function()
-    if AG.Active and AG.Mode == "Highest" then 
-        AG.Active = false 
-    else 
-        AG.Active = true 
-        AG.Mode = "Highest" 
+    if AG.Active and AG.Mode == "Highest" then
+        AG.Active = false
+    else
+        AG.Active = true
+        AG.Mode = "Highest"
     end
     updAll()
     SaveSettings()
 end)
 
 pBtn.MouseButton1Click:Connect(function()
-    if AG.Active and AG.Mode == "Priority" then 
-        AG.Active = false 
-    else 
-        AG.Active = true 
-        AG.Mode = "Priority" 
+    if AG.Active and AG.Mode == "Priority" then
+        AG.Active = false
+    else
+        AG.Active = true
+        AG.Mode = "Priority"
     end
     updAll()
     SaveSettings()
 end)
 
 nBtn.MouseButton1Click:Connect(function()
-    if AG.Active and AG.Mode == "Nearest" then 
-        AG.Active = false 
-    else 
-        AG.Active = true 
-        AG.Mode = "Nearest" 
+    if AG.Active and AG.Mode == "Nearest" then
+        AG.Active = false
+    else
+        AG.Active = true
+        AG.Mode = "Nearest"
     end
     updAll()
     SaveSettings()
@@ -560,7 +580,7 @@ Pct.Parent = Bar
 task.spawn(function()
     while AG.Running and Screen and Screen.Parent do
         Count.Text = tostring(AG.StealCount)
-        
+
         if AG.IsStealing then
             local p = AG.StealProgress
             Fill.Size = UDim2.new(math.clamp(p, 0, 1), 0, 1, 0)
@@ -579,7 +599,7 @@ task.spawn(function()
             end
             Fill.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
             Pct.Text = ""
-            
+
             if AG.Active then
                 Status.Text = "Scan"
                 Status.TextColor3 = Color3.fromRGB(120, 200, 120)
@@ -592,7 +612,7 @@ task.spawn(function()
                 PetName.Text = ""
             end
         end
-        
+
         task.wait(1/60)
     end
 end)
@@ -633,23 +653,35 @@ task.spawn(function()
                 local prio2D = Vector2.new(prio.position.X, prio.position.Z)
                 local dist = (hrp2D - prio2D).Magnitude
                 if dist <= NEAR_PRIORITY_DISTANCE then
-                    if not wasInRange and (not AG.Active or AG.Mode ~= "Priority") then
+                    if not wasInRange then
                         wasInRange = true
                         task.delay(0.1, function()
                             if not AG.Running then return end
                             if not AG.AutoTurnOnNearPriority then return end
                             local hrp2 = getHRP()
                             local prio2 = getPriorityTarget()
-                            if hrp2 and prio2 and prio2.position then
-                                local h2D = Vector2.new(hrp2.Position.X, hrp2.Position.Z)
-                                local p2D = Vector2.new(prio2.position.X, prio2.position.Z)
-                                local dist2 = (h2D - p2D).Magnitude
-                                if dist2 <= NEAR_PRIORITY_DISTANCE then
-                                    AG.Active = true
-                                    AG.Mode = "Priority"
-                                    updAll()
-                                    SaveSettings()
+                            if not hrp2 or not prio2 or not prio2.position then return end
+                            local h2D = Vector2.new(hrp2.Position.X, hrp2.Position.Z)
+                            local p2D = Vector2.new(prio2.position.X, prio2.position.Z)
+                            local dist2 = (h2D - p2D).Magnitude
+                            if dist2 > NEAR_PRIORITY_DISTANCE then return end
+                            local serverConfirmed = false
+                            local stealAttr = LocalPlayer:GetAttribute("Stealing")
+                            if stealAttr == true then
+                                serverConfirmed = true
+                            else
+                                if prio2.prompt and prio2.prompt.Parent then
+                                    local maxDist = prio2.prompt.MaxActivationDistance or 10
+                                    if dist2 <= maxDist then
+                                        serverConfirmed = true
+                                    end
                                 end
+                            end
+                            if serverConfirmed then
+                                AG.Active = true
+                                AG.Mode = "Priority"
+                                updAll()
+                                SaveSettings()
                             end
                         end)
                     end
