@@ -256,26 +256,6 @@ pcall(function()
     end
 end)
 
-local function isServerConfirmedNearPriority()
-    local hrp = getHRP()
-    if not hrp then return false end
-    local prio = getPriorityTarget()
-    if not prio or not prio.position then return false end
-    local hrp2D = Vector2.new(hrp.Position.X, hrp.Position.Z)
-    local prio2D = Vector2.new(prio.position.X, prio.position.Z)
-    local dist = (hrp2D - prio2D).Magnitude
-    if dist > NEAR_PRIORITY_DISTANCE then return false end
-    local stealAttr = LocalPlayer:GetAttribute("Stealing")
-    if stealAttr == true then return true end
-    if prio.prompt and prio.prompt.Parent then
-        local ok, conns = pcall(getconnections, prio.prompt.Triggered)
-        if ok and conns and #conns > 0 then
-            return true
-        end
-    end
-    return false
-end
-
 local thread = coroutine.create(function()
     while AG.Running do
         local success, err = pcall(function()
@@ -644,6 +624,7 @@ end
 
 task.spawn(function()
     local wasInRange = false
+    local lastTriggerTime = 0
     while AG.Running do
         if AG.AutoTurnOnNearPriority then
             local hrp = getHRP()
@@ -655,35 +636,39 @@ task.spawn(function()
                 if dist <= NEAR_PRIORITY_DISTANCE then
                     if not wasInRange then
                         wasInRange = true
-                        task.delay(0.1, function()
-                            if not AG.Running then return end
-                            if not AG.AutoTurnOnNearPriority then return end
-                            local hrp2 = getHRP()
-                            local prio2 = getPriorityTarget()
-                            if not hrp2 or not prio2 or not prio2.position then return end
-                            local h2D = Vector2.new(hrp2.Position.X, hrp2.Position.Z)
-                            local p2D = Vector2.new(prio2.position.X, prio2.position.Z)
-                            local dist2 = (h2D - p2D).Magnitude
-                            if dist2 > NEAR_PRIORITY_DISTANCE then return end
-                            local serverConfirmed = false
-                            local stealAttr = LocalPlayer:GetAttribute("Stealing")
-                            if stealAttr == true then
-                                serverConfirmed = true
-                            else
-                                if prio2.prompt and prio2.prompt.Parent then
-                                    local maxDist = prio2.prompt.MaxActivationDistance or 10
-                                    if dist2 <= maxDist then
-                                        serverConfirmed = true
+                        local currentTime = tick()
+                        if currentTime - lastTriggerTime >= 0.2 then
+                            lastTriggerTime = currentTime
+                            task.delay(0.2, function()
+                                if not AG.Running then return end
+                                if not AG.AutoTurnOnNearPriority then return end
+                                local hrp2 = getHRP()
+                                local prio2 = getPriorityTarget()
+                                if not hrp2 or not prio2 or not prio2.position then return end
+                                local h2D = Vector2.new(hrp2.Position.X, hrp2.Position.Z)
+                                local p2D = Vector2.new(prio2.position.X, prio2.position.Z)
+                                local dist2 = (h2D - p2D).Magnitude
+                                if dist2 > NEAR_PRIORITY_DISTANCE then return end
+                                local serverConfirmed = false
+                                local stealAttr = LocalPlayer:GetAttribute("Stealing")
+                                if stealAttr == true then
+                                    serverConfirmed = true
+                                else
+                                    if prio2.prompt and prio2.prompt.Parent then
+                                        local maxDist = prio2.prompt.MaxActivationDistance or 10
+                                        if dist2 <= maxDist then
+                                            serverConfirmed = true
+                                        end
                                     end
                                 end
-                            end
-                            if serverConfirmed then
-                                AG.Active = true
-                                AG.Mode = "Priority"
-                                updAll()
-                                SaveSettings()
-                            end
-                        end)
+                                if serverConfirmed then
+                                    AG.Active = true
+                                    AG.Mode = "Priority"
+                                    updAll()
+                                    SaveSettings()
+                                end
+                            end)
+                        end
                     end
                 else
                     wasInRange = false
