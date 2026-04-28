@@ -11,6 +11,8 @@ local LocalPlayer = Players.LocalPlayer
 local SAVE_KEY = "AutoGrab_Settings_" .. LocalPlayer.UserId
 local NEAR_PRIORITY_DISTANCE = 4
 
+local isInteractingWithSlider = false
+
 pcall(function()
     if LocalPlayer.PlayerGui:FindFirstChild("AutoGrabPanel") then
         LocalPlayer.PlayerGui:FindFirstChild("AutoGrabPanel"):Destroy()
@@ -30,7 +32,9 @@ getgenv().AutoGrabSystem = {
     CurrentPetName = "",
     StealDuration = 0.95,
     StealCount = 0,
-    Running = true
+    Running = true,
+    AutoOpenOnLoad = true,
+    GuiScale = 50
 }
 
 local AG = getgenv().AutoGrabSystem
@@ -45,7 +49,9 @@ local function SaveSettings()
             local data = {
                 Active = activeToSave,
                 Mode = AG.Mode,
-                AutoTurnOnNearPriority = AG.AutoTurnOnNearPriority
+                AutoTurnOnNearPriority = AG.AutoTurnOnNearPriority,
+                AutoOpenOnLoad = AG.AutoOpenOnLoad,
+                GuiScale = AG.GuiScale
             }
             writefile(SAVE_KEY .. ".json", HttpService:JSONEncode(data))
         end
@@ -59,6 +65,8 @@ local function LoadSettings()
             if data.Active ~= nil then AG.Active = data.Active end
             if data.Mode then AG.Mode = data.Mode end
             if data.AutoTurnOnNearPriority ~= nil then AG.AutoTurnOnNearPriority = data.AutoTurnOnNearPriority end
+            if data.AutoOpenOnLoad ~= nil then AG.AutoOpenOnLoad = data.AutoOpenOnLoad end
+            if data.GuiScale ~= nil then AG.GuiScale = data.GuiScale end
         end
     end)
 end
@@ -109,10 +117,8 @@ local function getAllTargets()
     local t = {}
     local plots = Workspace:FindFirstChild("Plots")
     if not plots then return t end
-
     for _, plot in pairs(plots:GetChildren()) do
         if isMyPlot(plot) then continue end
-
         for _, desc in pairs(plot:GetDescendants()) do
             if desc:IsA("Model") and Database[desc.Name] then
                 local root = desc:FindFirstChild("HumanoidRootPart") or desc.PrimaryPart
@@ -141,17 +147,14 @@ local function getPriorityTarget()
     if not PS or not PS.SelectedData then return nil end
     local d = PS.SelectedData
     if not d.plot or not d.slot then return nil end
-
     local plots = Workspace:FindFirstChild("Plots")
     if not plots then return nil end
     local plot = plots:FindFirstChild(d.plot)
     if not plot then return nil end
-
     local podiums = plot:FindFirstChild("AnimalPodiums")
     if not podiums then return nil end
     local podium = podiums:FindFirstChild(tostring(d.slot))
     if not podium then return nil end
-
     local prompt, pos = findPromptInPodium(podium)
     if prompt then
         return { prompt = prompt, position = pos, petName = d.name or "?", petValue = d.genValue or 0 }
@@ -162,12 +165,9 @@ end
 local function getTarget()
     local hrp = getHRP()
     if not hrp then return nil end
-
     if AG.Mode == "Priority" then return getPriorityTarget() end
-
     local targets = getAllTargets()
     if #targets == 0 then return nil end
-
     if AG.Mode == "Nearest" then
         local best, min = nil, math.huge
         for _, x in ipairs(targets) do
@@ -186,12 +186,10 @@ end
 
 local function firePrompt(prompt)
     if not prompt or not prompt.Parent then return false end
-
     if fireproximityprompt then
         pcall(fireproximityprompt, prompt, 1)
         return true
     end
-
     local ok, conns = pcall(getconnections, prompt.Triggered)
     if ok and conns then
         for _, c in ipairs(conns) do
@@ -199,7 +197,6 @@ local function firePrompt(prompt)
         end
         return true
     end
-
     local ok2, conns2 = pcall(getconnections, prompt.PromptButtonHoldBegan)
     if ok2 and conns2 then
         for _, c in ipairs(conns2) do
@@ -214,7 +211,6 @@ local function firePrompt(prompt)
         end
         return true
     end
-
     return false
 end
 
@@ -269,9 +265,7 @@ local function isServerConfirmedNearPriority()
     if stealAttr == true then return true end
     if prio.prompt and prio.prompt.Parent then
         local ok, conns = pcall(getconnections, prio.prompt.Triggered)
-        if ok and conns and #conns > 0 then
-            return true
-        end
+        if ok and conns and #conns > 0 then return true end
     end
     return false
 end
@@ -285,53 +279,40 @@ local thread = coroutine.create(function()
                 AG.StealProgress = 0
                 return
             end
-
             local target = getTarget()
             if not target or not target.prompt or not target.prompt.Parent then
                 AG.IsStealing = false
                 AG.CurrentPetName = ""
                 return
             end
-
             AG.IsStealing = true
             AG.CurrentPetName = target.petName
             AG.StealProgress = 0
-
             firePrompt(target.prompt)
-
             local startTime = tick()
             local lastRefire = startTime
             while tick() - startTime < AG.StealDuration do
                 AG.StealProgress = (tick() - startTime) / AG.StealDuration
-
                 if AG.Mode == "Priority" and target.prompt and target.prompt.Parent then
                     if tick() - lastRefire >= 0.1 then
                         firePrompt(target.prompt)
                         lastRefire = tick()
                     end
                 end
-
                 if detectSteal() then
                     AG.StealCount = AG.StealCount + 1
                     AG.StealProgress = 1
                     break
                 end
-
-                if not target.prompt or not target.prompt.Parent then
-                    break
-                end
-
+                if not target.prompt or not target.prompt.Parent then break end
                 task.wait(1/60)
             end
-
             AG.StealProgress = 1
             task.wait(0.1)
-
             AG.IsStealing = false
             AG.CurrentPetName = ""
             AG.StealProgress = 0
         end)
-
         task.wait(0.1)
     end
 end)
@@ -354,23 +335,17 @@ task.spawn(function()
                                 local lastRefire = st
                                 while tick() - st < AG.StealDuration do
                                     AG.StealProgress = (tick() - st) / AG.StealDuration
-
                                     if AG.Mode == "Priority" and target.prompt and target.prompt.Parent then
                                         if tick() - lastRefire >= 0.1 then
                                             firePrompt(target.prompt)
                                             lastRefire = tick()
                                         end
                                     end
-
                                     if detectSteal() then
                                         AG.StealCount = AG.StealCount + 1
                                         break
                                     end
-
-                                    if not target.prompt or not target.prompt.Parent then
-                                        break
-                                    end
-
+                                    if not target.prompt or not target.prompt.Parent then break end
                                     task.wait(1/60)
                                 end
                                 AG.IsStealing = false
@@ -387,6 +362,10 @@ task.spawn(function()
     end
 end)
 
+-- ============================================
+-- GUI
+-- ============================================
+
 local gui = LocalPlayer:WaitForChild("PlayerGui")
 local Screen = Instance.new("ScreenGui")
 Screen.Name = "AutoGrabPanel"
@@ -394,14 +373,82 @@ Screen.ResetOnSpawn = false
 Screen.Parent = gui
 AG.ScreenGui = Screen
 
+local GlobalUIScale = Instance.new("UIScale")
+GlobalUIScale.Name = "GlobalScale"
+GlobalUIScale.Scale = 0.3 + (1.0 - 0.3) * ((AG.GuiScale - 20) / (100 - 20))
+GlobalUIScale.Parent = Screen
+
 local Main = Instance.new("Frame")
-Main.Size = UDim2.new(0, 270, 0, 258)
+Main.Size = UDim2.new(0, 270, 0, 360)
 Main.Position = UDim2.new(1, -285, 0.5, -70)
 Main.BackgroundColor3 = Color3.fromRGB(12, 12, 14)
 Main.BorderSizePixel = 0
 Main.Parent = Screen
 Instance.new("UICorner", Main).CornerRadius = UDim.new(0, 10)
 Instance.new("UIStroke", Main).Color = Color3.fromRGB(35, 35, 40)
+
+-- ============================================
+-- OPEN BUTTON
+-- ============================================
+local OpenButton = Instance.new("TextButton")
+OpenButton.Name             = "OpenButton"
+OpenButton.Size             = UDim2.new(0, 150, 0, 32)
+OpenButton.Position         = UDim2.new(1, -165, 0.5, -70)
+OpenButton.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
+OpenButton.BorderSizePixel  = 0
+OpenButton.Text             = "Open Auto Grab"
+OpenButton.TextColor3       = Color3.fromRGB(170, 170, 180)
+OpenButton.Font             = Enum.Font.GothamBold
+OpenButton.TextSize         = 12
+OpenButton.AutoButtonColor  = false
+OpenButton.Visible          = false
+OpenButton.Parent           = Screen
+Instance.new("UICorner", OpenButton).CornerRadius = UDim.new(0, 8)
+local openStroke = Instance.new("UIStroke", OpenButton)
+openStroke.Color     = Color3.fromRGB(40, 40, 48)
+openStroke.Thickness = 1
+
+OpenButton.MouseEnter:Connect(function()
+    TweenService:Create(OpenButton, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(28, 28, 34)}):Play()
+end)
+OpenButton.MouseLeave:Connect(function()
+    TweenService:Create(OpenButton, TweenInfo.new(0.2), {BackgroundColor3 = Color3.fromRGB(18, 18, 22)}):Play()
+end)
+
+local function updateOpenButtonVisibility()
+    OpenButton.Visible = not Main.Visible
+end
+
+OpenButton.MouseButton1Click:Connect(function()
+    Main.Visible = true
+    OpenButton.Visible = false
+end)
+
+local openDragging, openDragStart, openStartPos
+OpenButton.InputBegan:Connect(function(i)
+    if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+        openDragging = true
+        openDragStart = i.Position
+        openStartPos = OpenButton.Position
+    end
+end)
+UserInputService.InputChanged:Connect(function(input)
+    if openDragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        local delta = input.Position - openDragStart
+        if delta.Magnitude > 5 then
+            OpenButton.Position = UDim2.new(openStartPos.X.Scale, openStartPos.X.Offset + delta.X, openStartPos.Y.Scale, openStartPos.Y.Offset + delta.Y)
+        end
+    end
+end)
+UserInputService.InputEnded:Connect(function(i)
+    if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+        openDragging = false
+    end
+end)
+
+-- ============================================
+-- PANEL HEADER
+-- ============================================
 
 local Title = Instance.new("TextLabel")
 Title.Size = UDim2.new(1, -70, 0, 36)
@@ -414,9 +461,33 @@ Title.TextSize = 15
 Title.TextXAlignment = Enum.TextXAlignment.Left
 Title.Parent = Main
 
+local CloseBtn = Instance.new("TextButton")
+CloseBtn.Size               = UDim2.new(0, 26, 0, 26)
+CloseBtn.Position           = UDim2.new(1, -32, 0, 6)
+CloseBtn.BackgroundColor3   = Color3.fromRGB(25, 25, 30)
+CloseBtn.BorderSizePixel    = 0
+CloseBtn.Text               = "×"
+CloseBtn.TextColor3         = Color3.fromRGB(140, 140, 150)
+CloseBtn.Font               = Enum.Font.GothamBold
+CloseBtn.TextSize           = 18
+CloseBtn.AutoButtonColor    = false
+CloseBtn.Parent             = Main
+Instance.new("UICorner", CloseBtn).CornerRadius = UDim.new(0, 6)
+
+CloseBtn.MouseEnter:Connect(function()
+    TweenService:Create(CloseBtn, TweenInfo.new(0.15), {BackgroundColor3 = Color3.fromRGB(60, 30, 30), TextColor3 = Color3.fromRGB(255, 100, 100)}):Play()
+end)
+CloseBtn.MouseLeave:Connect(function()
+    TweenService:Create(CloseBtn, TweenInfo.new(0.15), {BackgroundColor3 = Color3.fromRGB(25, 25, 30), TextColor3 = Color3.fromRGB(140, 140, 150)}):Play()
+end)
+CloseBtn.MouseButton1Click:Connect(function()
+    Main.Visible = false
+    updateOpenButtonVisibility()
+end)
+
 local Count = Instance.new("TextLabel")
-Count.Size = UDim2.new(0, 60, 0, 36)
-Count.Position = UDim2.new(1, -70, 0, 4)
+Count.Size = UDim2.new(0, 40, 0, 36)
+Count.Position = UDim2.new(1, -72, 0, 4)
 Count.BackgroundTransparency = 1
 Count.Text = "0"
 Count.TextColor3 = Color3.fromRGB(100, 200, 100)
@@ -431,6 +502,10 @@ Div.Position = UDim2.new(0.05, 0, 0, 40)
 Div.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
 Div.BorderSizePixel = 0
 Div.Parent = Main
+
+-- ============================================
+-- TOGGLE BUTTONS
+-- ============================================
 
 local function MakeBtn(name, y)
     local h = Instance.new("Frame")
@@ -506,43 +581,31 @@ updAll()
 updAuto()
 
 hBtn.MouseButton1Click:Connect(function()
-    if AG.Active and AG.Mode == "Highest" then
-        AG.Active = false
-    else
-        AG.Active = true
-        AG.Mode = "Highest"
-    end
-    updAll()
-    SaveSettings()
+    if AG.Active and AG.Mode == "Highest" then AG.Active = false
+    else AG.Active = true; AG.Mode = "Highest" end
+    updAll(); SaveSettings()
 end)
 
 pBtn.MouseButton1Click:Connect(function()
-    if AG.Active and AG.Mode == "Priority" then
-        AG.Active = false
-    else
-        AG.Active = true
-        AG.Mode = "Priority"
-    end
-    updAll()
-    SaveSettings()
+    if AG.Active and AG.Mode == "Priority" then AG.Active = false
+    else AG.Active = true; AG.Mode = "Priority" end
+    updAll(); SaveSettings()
 end)
 
 nBtn.MouseButton1Click:Connect(function()
-    if AG.Active and AG.Mode == "Nearest" then
-        AG.Active = false
-    else
-        AG.Active = true
-        AG.Mode = "Nearest"
-    end
-    updAll()
-    SaveSettings()
+    if AG.Active and AG.Mode == "Nearest" then AG.Active = false
+    else AG.Active = true; AG.Mode = "Nearest" end
+    updAll(); SaveSettings()
 end)
 
 autoBtn.MouseButton1Click:Connect(function()
     AG.AutoTurnOnNearPriority = not AG.AutoTurnOnNearPriority
-    updAuto()
-    SaveSettings()
+    updAuto(); SaveSettings()
 end)
+
+-- ============================================
+-- STATUS BAR
+-- ============================================
 
 local Bar = Instance.new("Frame")
 Bar.Size = UDim2.new(0.9, 0, 0, 28)
@@ -601,10 +664,262 @@ Pct.TextSize = 10
 Pct.TextXAlignment = Enum.TextXAlignment.Right
 Pct.Parent = Bar
 
+-- ============================================
+-- SETTINGS SECTION
+-- ============================================
+
+local SettingsDivider = Instance.new("Frame", Main)
+SettingsDivider.Size             = UDim2.new(0.9, 0, 0, 1)
+SettingsDivider.Position         = UDim2.new(0.05, 0, 0, 262)
+SettingsDivider.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+SettingsDivider.BorderSizePixel  = 0
+
+local SettingsLabel = Instance.new("TextLabel")
+SettingsLabel.Size               = UDim2.new(0.9, 0, 0, 20)
+SettingsLabel.Position           = UDim2.new(0.05, 0, 0, 270)
+SettingsLabel.BackgroundTransparency = 1
+SettingsLabel.Text               = "Settings"
+SettingsLabel.TextColor3         = Color3.fromRGB(130, 130, 140)
+SettingsLabel.Font               = Enum.Font.GothamBold
+SettingsLabel.TextSize           = 11
+SettingsLabel.TextXAlignment     = Enum.TextXAlignment.Left
+SettingsLabel.Parent             = Main
+
+-- Auto Open on Load
+local AutoOpenFrame = Instance.new("Frame")
+AutoOpenFrame.Size             = UDim2.new(0.9, 0, 0, 30)
+AutoOpenFrame.Position         = UDim2.new(0.05, 0, 0, 293)
+AutoOpenFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
+AutoOpenFrame.BorderSizePixel  = 0
+AutoOpenFrame.Parent           = Main
+Instance.new("UICorner", AutoOpenFrame).CornerRadius = UDim.new(0, 6)
+
+local AutoOpenLabel = Instance.new("TextLabel")
+AutoOpenLabel.Size               = UDim2.new(0.65, 0, 1, 0)
+AutoOpenLabel.Position           = UDim2.new(0, 10, 0, 0)
+AutoOpenLabel.BackgroundTransparency = 1
+AutoOpenLabel.Text               = "Auto Open on Load"
+AutoOpenLabel.Font               = Enum.Font.Gotham
+AutoOpenLabel.TextSize           = 11
+AutoOpenLabel.TextXAlignment     = Enum.TextXAlignment.Left
+AutoOpenLabel.TextColor3         = Color3.fromRGB(160, 160, 175)
+AutoOpenLabel.Parent             = AutoOpenFrame
+
+local AutoOpenToggleBg = Instance.new("Frame")
+AutoOpenToggleBg.Size             = UDim2.new(0, 36, 0, 18)
+AutoOpenToggleBg.Position         = UDim2.new(1, -46, 0.5, -9)
+AutoOpenToggleBg.BackgroundColor3 = Color3.fromRGB(32, 32, 38)
+AutoOpenToggleBg.BorderSizePixel  = 0
+AutoOpenToggleBg.Parent           = AutoOpenFrame
+Instance.new("UICorner", AutoOpenToggleBg).CornerRadius = UDim.new(1, 0)
+
+local AutoOpenCircle = Instance.new("Frame")
+AutoOpenCircle.Size             = UDim2.new(0, 14, 0, 14)
+AutoOpenCircle.Position         = UDim2.new(0, 2, 0.5, -7)
+AutoOpenCircle.BackgroundColor3 = Color3.fromRGB(90, 90, 100)
+AutoOpenCircle.BorderSizePixel  = 0
+AutoOpenCircle.Parent           = AutoOpenToggleBg
+Instance.new("UICorner", AutoOpenCircle).CornerRadius = UDim.new(1, 0)
+
+local AutoOpenBtn = Instance.new("TextButton")
+AutoOpenBtn.Size               = UDim2.new(1, 0, 1, 0)
+AutoOpenBtn.BackgroundTransparency = 1
+AutoOpenBtn.Text               = ""
+AutoOpenBtn.Parent             = AutoOpenToggleBg
+
+local function updateAutoOpenVisual(instant)
+    local on = AG.AutoOpenOnLoad
+    local cPos = on and UDim2.new(0, 20, 0.5, -7) or UDim2.new(0, 2, 0.5, -7)
+    local cCol = on and Color3.fromRGB(200, 200, 210) or Color3.fromRGB(90, 90, 100)
+    local bgCol = on and Color3.fromRGB(55, 55, 65) or Color3.fromRGB(32, 32, 38)
+    local tCol = on and Color3.fromRGB(220, 220, 230) or Color3.fromRGB(160, 160, 175)
+    if instant then
+        AutoOpenCircle.Position = cPos
+        AutoOpenCircle.BackgroundColor3 = cCol
+        AutoOpenToggleBg.BackgroundColor3 = bgCol
+        AutoOpenLabel.TextColor3 = tCol
+    else
+        TweenService:Create(AutoOpenCircle, TweenInfo.new(0.2), {Position=cPos, BackgroundColor3=cCol}):Play()
+        TweenService:Create(AutoOpenToggleBg, TweenInfo.new(0.2), {BackgroundColor3=bgCol}):Play()
+        TweenService:Create(AutoOpenLabel, TweenInfo.new(0.2), {TextColor3=tCol}):Play()
+    end
+end
+updateAutoOpenVisual(true)
+AutoOpenBtn.MouseButton1Click:Connect(function()
+    AG.AutoOpenOnLoad = not AG.AutoOpenOnLoad
+    updateAutoOpenVisual(false)
+    SaveSettings()
+end)
+
+-- GUI Scale Slider with TextBox
+local GuiScaleFrame = Instance.new("Frame")
+GuiScaleFrame.Size             = UDim2.new(0.9, 0, 0, 36)
+GuiScaleFrame.Position         = UDim2.new(0.05, 0, 0, 328)
+GuiScaleFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
+GuiScaleFrame.BorderSizePixel  = 0
+GuiScaleFrame.Parent           = Main
+Instance.new("UICorner", GuiScaleFrame).CornerRadius = UDim.new(0, 6)
+
+local GuiScaleLabel = Instance.new("TextLabel")
+GuiScaleLabel.Size               = UDim2.new(0, 65, 1, 0)
+GuiScaleLabel.Position           = UDim2.new(0, 10, 0, 0)
+GuiScaleLabel.BackgroundTransparency = 1
+GuiScaleLabel.Text               = "GUI Scale"
+GuiScaleLabel.Font               = Enum.Font.Gotham
+GuiScaleLabel.TextSize           = 11
+GuiScaleLabel.TextXAlignment     = Enum.TextXAlignment.Left
+GuiScaleLabel.TextColor3         = Color3.fromRGB(160, 160, 175)
+GuiScaleLabel.Parent             = GuiScaleFrame
+
+local GuiScaleBar = Instance.new("Frame")
+GuiScaleBar.Size             = UDim2.new(0, 100, 0, 5)
+GuiScaleBar.Position         = UDim2.new(0, 80, 0.5, -2)
+GuiScaleBar.BackgroundColor3 = Color3.fromRGB(35, 35, 40)
+GuiScaleBar.BorderSizePixel  = 0
+GuiScaleBar.Parent           = GuiScaleFrame
+Instance.new("UICorner", GuiScaleBar).CornerRadius = UDim.new(1, 0)
+
+local GuiScaleFill = Instance.new("Frame")
+GuiScaleFill.Size             = UDim2.new(0, 0, 1, 0)
+GuiScaleFill.BackgroundColor3 = Color3.fromRGB(200, 200, 210)
+GuiScaleFill.BorderSizePixel  = 0
+GuiScaleFill.Parent           = GuiScaleBar
+Instance.new("UICorner", GuiScaleFill).CornerRadius = UDim.new(1, 0)
+
+local GuiScaleKnob = Instance.new("Frame")
+GuiScaleKnob.Size             = UDim2.new(0, 10, 0, 10)
+GuiScaleKnob.Position         = UDim2.new(0, -5, 0.5, -5)
+GuiScaleKnob.BackgroundColor3 = Color3.fromRGB(230, 230, 235)
+GuiScaleKnob.BorderSizePixel  = 0
+GuiScaleKnob.Parent           = GuiScaleBar
+Instance.new("UICorner", GuiScaleKnob).CornerRadius = UDim.new(1, 0)
+
+local GuiScaleValueBG = Instance.new("Frame")
+GuiScaleValueBG.Size             = UDim2.new(0, 45, 0, 18)
+GuiScaleValueBG.Position         = UDim2.new(1, -52, 0.5, -9)
+GuiScaleValueBG.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+GuiScaleValueBG.BorderSizePixel  = 0
+GuiScaleValueBG.Parent           = GuiScaleFrame
+Instance.new("UICorner", GuiScaleValueBG).CornerRadius = UDim.new(0, 4)
+
+local GuiScaleInput = Instance.new("TextBox")
+GuiScaleInput.Size               = UDim2.new(1, 0, 1, 0)
+GuiScaleInput.BackgroundTransparency = 1
+GuiScaleInput.Text               = tostring(AG.GuiScale) .. "%"
+GuiScaleInput.Font               = Enum.Font.GothamBold
+GuiScaleInput.TextSize           = 10
+GuiScaleInput.TextColor3         = Color3.fromRGB(200, 200, 210)
+GuiScaleInput.TextXAlignment     = Enum.TextXAlignment.Center
+GuiScaleInput.ClearTextOnFocus   = false
+GuiScaleInput.PlaceholderColor3  = Color3.fromRGB(100, 100, 110)
+GuiScaleInput.Parent             = GuiScaleValueBG
+
+local guiScaleDragging = false
+
+local function setGuiScaleFromAlpha(a, instant)
+    a = math.clamp(a, 0, 1)
+    local value = math.floor(20 + (100 - 20) * a + 0.5)
+    AG.GuiScale = value
+    if not GuiScaleInput:IsFocused() then
+        GuiScaleInput.Text = tostring(value) .. "%"
+    end
+    local sizeX = GuiScaleBar.AbsoluteSize.X
+    if sizeX <= 0 then return end
+    local x = a * sizeX
+    if instant then
+        GuiScaleFill.Size = UDim2.new(0, x, 1, 0)
+        GuiScaleKnob.Position = UDim2.new(0, x - 5, 0.5, -5)
+    else
+        TweenService:Create(GuiScaleFill, TweenInfo.new(0.1), {Size = UDim2.new(0, x, 1, 0)}):Play()
+        TweenService:Create(GuiScaleKnob, TweenInfo.new(0.1), {Position = UDim2.new(0, x - 5, 0.5, -5)}):Play()
+    end
+    local scale = 0.3 + (1.0 - 0.3) * ((value - 20) / (100 - 20))
+    if instant then
+        GlobalUIScale.Scale = scale
+    else
+        TweenService:Create(GlobalUIScale, TweenInfo.new(0.15), {Scale = scale}):Play()
+    end
+    SaveSettings()
+end
+
+local function updateGuiScaleFromX(px)
+    local absPos = GuiScaleBar.AbsolutePosition.X
+    local sizeX = GuiScaleBar.AbsoluteSize.X
+    if sizeX <= 0 then return end
+    local alpha = (px - absPos) / sizeX
+    setGuiScaleFromAlpha(alpha, false)
+end
+
+GuiScaleInput.FocusLost:Connect(function()
+    local txt = GuiScaleInput.Text:gsub("%%", "")
+    local num = tonumber(txt)
+    if num then
+        num = math.clamp(math.floor(num + 0.5), 20, 100)
+        AG.GuiScale = num
+        local alpha = (num - 20) / (100 - 20)
+        setGuiScaleFromAlpha(alpha, false)
+    else
+        GuiScaleInput.Text = tostring(AG.GuiScale) .. "%"
+    end
+end)
+
+GuiScaleBar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        guiScaleDragging = true
+        isInteractingWithSlider = true
+        updateGuiScaleFromX(input.Position.X)
+    end
+end)
+
+GuiScaleKnob.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        guiScaleDragging = true
+        isInteractingWithSlider = true
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if guiScaleDragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+        updateGuiScaleFromX(input.Position.X)
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        if guiScaleDragging then
+            guiScaleDragging = false
+            isInteractingWithSlider = false
+        end
+    end
+end)
+
+-- Finale Hoehe
+Main.Size = UDim2.new(0, 270, 0, 372)
+
+-- Slider initial
+task.defer(function()
+    local alpha = (AG.GuiScale - 20) / (100 - 20)
+    setGuiScaleFromAlpha(alpha, true)
+end)
+
+-- Auto Open beim Start
+task.defer(function()
+    if not AG.AutoOpenOnLoad then
+        Main.Visible = false
+        OpenButton.Visible = true
+    else
+        Main.Visible = true
+        OpenButton.Visible = false
+    end
+end)
+
+-- ============================================
+-- STATUS LOOP
+-- ============================================
+
 task.spawn(function()
     while AG.Running and Screen and Screen.Parent do
         Count.Text = tostring(AG.StealCount)
-
         if AG.IsStealing then
             local p = AG.StealProgress
             Fill.Size = UDim2.new(math.clamp(p, 0, 1), 0, 1, 0)
@@ -623,7 +938,6 @@ task.spawn(function()
             end
             Fill.BackgroundColor3 = Color3.fromRGB(80, 80, 90)
             Pct.Text = ""
-
             if AG.Active then
                 Status.Text = "Scan"
                 Status.TextColor3 = Color3.fromRGB(120, 200, 120)
@@ -636,13 +950,17 @@ task.spawn(function()
                 PetName.Text = ""
             end
         end
-
         task.wait(1/60)
     end
 end)
 
+-- ============================================
+-- DRAGGING (blocked when slider active)
+-- ============================================
+
 local drag, ds, sp
 Main.InputBegan:Connect(function(i)
+    if isInteractingWithSlider then return end
     if i.UserInputType == Enum.UserInputType.MouseButton1 then
         drag = true
         ds = i.Position
@@ -650,7 +968,7 @@ Main.InputBegan:Connect(function(i)
     end
 end)
 UserInputService.InputChanged:Connect(function(i)
-    if drag and i.UserInputType == Enum.UserInputType.MouseMovement then
+    if drag and not isInteractingWithSlider and i.UserInputType == Enum.UserInputType.MouseMovement then
         local d = i.Position - ds
         Main.Position = UDim2.new(sp.X.Scale, sp.X.Offset + d.X, sp.Y.Scale, sp.Y.Offset + d.Y)
     end
@@ -659,12 +977,35 @@ UserInputService.InputEnded:Connect(function(i)
     if i.UserInputType == Enum.UserInputType.MouseButton1 then drag = false end
 end)
 
+-- ============================================
+-- KEYBIND
+-- ============================================
+
+UserInputService.InputBegan:Connect(function(input, gpe)
+    if gpe then return end
+    if input.UserInputType == Enum.UserInputType.Keyboard then
+        if input.KeyCode == Enum.KeyCode.RightControl then
+            Main.Visible = not Main.Visible
+            updateOpenButtonVisibility()
+            return
+        end
+    end
+end)
+
+-- ============================================
+-- DISABLE
+-- ============================================
+
 function AG.Disable()
     AG.Active = false
     AG.Running = false
     SaveSettings()
     if AG.ScreenGui then AG.ScreenGui:Destroy() end
 end
+
+-- ============================================
+-- AUTO TURN ON NEAR PRIORITY
+-- ============================================
 
 task.spawn(function()
     local wasInRange = false
@@ -696,9 +1037,7 @@ task.spawn(function()
                             else
                                 if prio2.prompt and prio2.prompt.Parent then
                                     local maxDist = prio2.prompt.MaxActivationDistance or 10
-                                    if dist2 <= maxDist then
-                                        serverConfirmed = true
-                                    end
+                                    if dist2 <= maxDist then serverConfirmed = true end
                                 end
                             end
                             if serverConfirmed then
