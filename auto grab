@@ -6,7 +6,404 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 local HttpService = game:GetService("HttpService")
+local RunService = game:GetService("RunService")
+
 local LocalPlayer = Players.LocalPlayer
+
+-- =========================
+-- NEUES AUTO STEAL SYSTEM
+-- =========================
+
+local AnimalsData = {}
+local success, result = pcall(function()
+    return require(ReplicatedStorage:WaitForChild("Datas"):WaitForChild("Animals"))
+end)
+if success then
+    AnimalsData = result
+else
+    warn("Failed to load AnimalsData.")
+end
+
+local allAnimalsCache = {}
+local PromptMemoryCache = {}
+local InternalStealCache = {}
+local LastTargetUID = nil
+
+local AUTO_STEAL_PROX_RADIUS = 1000
+local IsStealingInternal = false
+local StealProgressInternal = 0
+local CurrentStealTargetInternal = nil
+
+local autoStealEnabled = false
+local stealConnection = nil
+
+local function getHRP()
+    local c = LocalPlayer.Character
+    return c and (c:FindFirstChild("HumanoidRootPart") or c:FindFirstChild("UpperTorso"))
+end
+
+local function isMyBase(plotName)
+    local plots = Workspace:FindFirstChild("Plots")
+    if not plots then return false end
+    local plot = plots:FindFirstChild(plotName)
+    if not plot then return false end
+
+    local sign = plot:FindFirstChild("PlotSign")
+    if sign then
+        local yourBase = sign:FindFirstChild("YourBase")
+        if yourBase and yourBase:IsA("BillboardGui") then
+            return yourBase.Enabled == true
+        end
+    end
+    return false
+end
+
+local function scanSinglePlot(plot)
+    if not plot or not plot:IsA("Model") then return end
+    if isMyBase(plot.Name) then return end
+
+    local podiums = plot:FindFirstChild("AnimalPodiums")
+    if not podiums then return end
+
+    for _, podium in ipairs(podiums:GetChildren()) do
+        if podium:IsA("Model") and podium:FindFirstChild("Base") then
+            local animalName = "Unknown"
+
+            local spawn = podium.Base:FindFirstChild("Spawn")
+            if spawn then
+                for _, child in ipairs(spawn:GetChildren()) do
+                    if child:IsA("Model") and child.Name ~= "PromptAttachment" then
+                        animalName = child.Name
+
+                        local animalInfo = AnimalsData[animalName]
+                        if animalInfo and animalInfo.DisplayName then
+                            animalName = animalInfo.DisplayName
+                        end
+                        break
+                    end
+                end
+            end
+
+            local uid = plot.Name .. "_" .. podium.Name
+
+            for i = #allAnimalsCache, 1, -1 do
+                if allAnimalsCache[i].uid == uid then
+                    table.remove(allAnimalsCache, i)
+                end
+            end
+
+            table.insert(allAnimalsCache, {
+                name = animalName,
+                plot = plot.Name,
+                slot = podium.Name,
+                worldPosition = podium:GetPivot().Position,
+                uid = uid,
+            })
+        end
+    end
+end
+
+local function initializeScanner()
+    task.wait(2)
+
+    local plots = Workspace:FindFirstChild("Plots")
+    if not plots then return end
+
+    for _, plot in ipairs(plots:GetChildren()) do
+        if plot:IsA("Model") then
+            scanSinglePlot(plot)
+        end
+    end
+
+    plots.ChildAdded:Connect(function(plot)
+        if plot:IsA("Model") then
+            task.wait(0.5)
+            scanSinglePlot(plot)
+        end
+    end)
+
+    plots.ChildRemoved:Connect(function(plot)
+        for i = #allAnimalsCache, 1, -1 do
+            if allAnimalsCache[i].plot == plot.Name then
+                table.remove(allAnimalsCache, i)
+            end
+        end
+    end)
+
+    local function watchPlot(plot)
+        if not plot or not plot:IsA("Model") then return end
+
+        local podiums = plot:WaitForChild("AnimalPodiums", 5)
+        if not podiums then return end
+
+        podiums.ChildAdded:Connect(function(podium)
+            task.wait(0.3)
+            scanSinglePlot(plot)
+        end)
+
+        podiums.ChildRemoved:Connect(function(podium)
+            local uid = plot.Name .. "_" .. podium.Name
+            for i = #allAnimalsCache, 1, -1 do
+                if allAnimalsCache[i].uid == uid then
+                    table.remove(allAnimalsCache, i)
+                    PromptMemoryCache[uid] = nil
+                end
+            end
+        end)
+
+        for _, podium in ipairs(podiums:GetChildren()) do
+            if podium:IsA("Model") and podium:FindFirstChild("Base") then
+                local spawnFolder = podium.Base:FindFirstChild("Spawn")
+                if spawnFolder then
+                    spawnFolder.ChildAdded:Connect(function()
+                        task.wait(0.1)
+                        scanSinglePlot(plot)
+                    end)
+                    spawnFolder.ChildRemoved:Connect(function()
+                        task.wait(0.1)
+                        scanSinglePlot(plot)
+                    end)
+                end
+            end
+        end
+    end
+
+    for _, plot in ipairs(plots:GetChildren()) do
+        task.spawn(watchPlot, plot)
+    end
+
+    plots.ChildAdded:Connect(function(plot)
+        task.spawn(watchPlot, plot)
+    end)
+end
+
+local function findProximityPromptForAnimal(animalData)
+    if not animalData then return nil end
+
+    local cachedPrompt = PromptMemoryCache[animalData.uid]
+    if cachedPrompt and cachedPrompt.Parent then
+        return cachedPrompt
+    end
+
+    local plots = Workspace:FindFirstChild("Plots")
+    if not plots then return nil end
+
+    local plot = plots:FindFirstChild(animalData.plot)
+    if not plot then return nil end
+
+    local podiums = plot:FindFirstChild("AnimalPodiums")
+    if not podiums then return nil end
+
+    local podium = podiums:FindFirstChild(animalData.slot)
+    if not podium then return nil end
+
+    local base = podium:FindFirstChild("Base")
+    if not base then return nil end
+
+    local spawn = base:FindFirstChild("Spawn")
+    if not spawn then return nil end
+
+    local attach = spawn:FindFirstChild("PromptAttachment")
+    if not attach then return nil end
+
+    for _, p in ipairs(attach:GetChildren()) do
+        if p:IsA("ProximityPrompt") then
+            PromptMemoryCache[animalData.uid] = p
+            return p
+        end
+    end
+
+    return nil
+end
+
+local function shouldSteal(animalData)
+    if not animalData or not animalData.worldPosition then return false end
+    local hrp = getHRP()
+    if not hrp then return false end
+
+    local dist = (hrp.Position - animalData.worldPosition).Magnitude
+    return dist <= AUTO_STEAL_PROX_RADIUS
+end
+
+local function buildStealCallbacks(prompt)
+    if InternalStealCache[prompt] then
+        return
+    end
+
+    local data = {
+        holdCallbacks = {},
+        triggerCallbacks = {},
+        ready = true
+    }
+
+    local ok1, conns1 = pcall(getconnections, prompt.PromptButtonHoldBegan)
+    if ok1 and type(conns1) == "table" then
+        for _, conn in ipairs(conns1) do
+            if type(conn.Function) == "function" then
+                table.insert(data.holdCallbacks, conn.Function)
+            end
+        end
+    end
+
+    local ok2, conns2 = pcall(getconnections, prompt.Triggered)
+    if ok2 and type(conns2) == "table" then
+        for _, conn in ipairs(conns2) do
+            if type(conn.Function) == "function" then
+                table.insert(data.triggerCallbacks, conn.Function)
+            end
+        end
+    end
+
+    if (#data.holdCallbacks > 0) or (#data.triggerCallbacks > 0) then
+        InternalStealCache[prompt] = data
+    end
+end
+
+local function executeInternalStealAsync(prompt, animalData)
+    local data = InternalStealCache[prompt]
+    if not data or not data.ready then return false end
+
+    data.ready = false
+    IsStealingInternal = true
+    StealProgressInternal = 0
+    CurrentStealTargetInternal = animalData
+
+    task.spawn(function()
+        if #data.holdCallbacks > 0 then
+            for _, fn in ipairs(data.holdCallbacks) do
+                task.spawn(fn)
+            end
+        end
+
+        local startTime = tick()
+        local duration = 0.9 -- wie gewünscht, 0.9 statt 1.3
+
+        if prompt and prompt.HoldDuration then
+            duration = prompt.HoldDuration
+        end
+
+        while tick() - startTime < duration do
+            StealProgressInternal = (tick() - startTime) / duration
+            task.wait(0.05)
+        end
+
+        StealProgressInternal = 1
+
+        if #data.triggerCallbacks > 0 then
+            for _, fn in ipairs(data.triggerCallbacks) do
+                task.spawn(fn)
+            end
+        end
+
+        task.wait(0.1)
+
+        data.ready = true
+
+        task.wait(0.3)
+
+        IsStealingInternal = false
+        StealProgressInternal = 0
+        CurrentStealTargetInternal = nil
+    end)
+
+    return true
+end
+
+local function attemptSteal(prompt, animalData)
+    if not prompt or not prompt.Parent then return false end
+
+    buildStealCallbacks(prompt)
+    if not InternalStealCache[prompt] then
+        return false
+    end
+
+    return executeInternalStealAsync(prompt, animalData)
+end
+
+local function getNearestAnimal()
+    local hrp = getHRP()
+    if not hrp then return nil end
+
+    local nearest, minDist = nil, math.huge
+
+    for _, animalData in ipairs(allAnimalsCache) do
+        if not isMyBase(animalData.plot) and animalData.worldPosition then
+            local dist = (hrp.Position - animalData.worldPosition).Magnitude
+            if dist < minDist then
+                minDist = dist
+                nearest = animalData
+            end
+        end
+    end
+
+    return nearest
+end
+
+local function startAutoSteal()
+    if stealConnection then
+        stealConnection:Disconnect()
+    end
+
+    autoStealEnabled = true
+
+    stealConnection = RunService.Heartbeat:Connect(function()
+        if not autoStealEnabled or IsStealingInternal then
+            return
+        end
+
+        local target = getNearestAnimal()
+        if not target or not shouldSteal(target) then
+            return
+        end
+
+        if LastTargetUID ~= target.uid then
+            LastTargetUID = target.uid
+        end
+
+        local prompt = PromptMemoryCache[target.uid]
+        if not prompt or not prompt.Parent then
+            prompt = findProximityPromptForAnimal(target)
+        end
+
+        if prompt then
+            attemptSteal(prompt, target)
+        end
+    end)
+end
+
+local function stopAutoSteal()
+    autoStealEnabled = false
+
+    if stealConnection then
+        stealConnection:Disconnect()
+        stealConnection = nil
+    end
+
+    IsStealingInternal = false
+    StealProgressInternal = 0
+    CurrentStealTargetInternal = nil
+end
+
+task.spawn(initializeScanner)
+
+getgenv().LuminaAutoSteal = {
+    AllAnimalsCache = allAnimalsCache,
+    PromptMemoryCache = PromptMemoryCache,
+    InternalStealCache = InternalStealCache,
+    IsStealing = function() return IsStealingInternal end,
+    StealProgress = function() return StealProgressInternal end,
+    CurrentTarget = function() return CurrentStealTargetInternal end,
+    Start = startAutoSteal,
+    Stop = stopAutoSteal,
+    GetNearestAnimal = getNearestAnimal,
+    ShouldSteal = shouldSteal,
+    FindPrompt = findProximityPromptForAnimal,
+    AttemptSteal = attemptSteal
+}
+
+-- =========================
+-- AB HIER: DEIN UI + SETTINGS
+-- =========================
 
 local SAVE_KEY = "AutoGrab_Settings_" .. LocalPlayer.UserId
 local NEAR_PRIORITY_DISTANCE = 4
@@ -25,12 +422,12 @@ end
 
 getgenv().AutoGrabSystem = {
     Active = false,
-    Mode = "Highest",
+    Mode = "Highest", -- nutze später ggf. PrioritySystem, aktuell wirkt das neue System wie "Nearest"
     AutoTurnOnNearPriority = false,
     IsStealing = false,
     StealProgress = 0,
     CurrentPetName = "",
-    StealDuration = 0.95,
+    StealDuration = 0.9, -- wie gewünscht
     StealCount = 0,
     Running = true,
     AutoOpenOnLoad = true,
@@ -73,6 +470,7 @@ end
 
 LoadSettings()
 
+-- Priority-System aus deinem alten Script bleibt
 local Database = {}
 pcall(function()
     local m = require(ReplicatedStorage:WaitForChild("Datas"):WaitForChild("Animals"))
@@ -84,18 +482,9 @@ pcall(function()
     end
 end)
 
-local function getHRP()
+local function getHRP_Old()
     local c = LocalPlayer.Character
     return c and c:FindFirstChild("HumanoidRootPart")
-end
-
-local function isMyPlot(plot)
-    for _, o in pairs(plot:GetDescendants()) do
-        if o:IsA("TextLabel") and o.Text and (o.Text:find(LocalPlayer.Name) or o.Text:find(LocalPlayer.DisplayName)) then
-            return true
-        end
-    end
-    return false
 end
 
 local function findPromptInPodium(podium)
@@ -113,35 +502,6 @@ local function findPromptInPodium(podium)
     return nil, nil
 end
 
-local function getAllTargets()
-    local t = {}
-    local plots = Workspace:FindFirstChild("Plots")
-    if not plots then return t end
-    for _, plot in pairs(plots:GetChildren()) do
-        if isMyPlot(plot) then continue end
-        for _, desc in pairs(plot:GetDescendants()) do
-            if desc:IsA("Model") and Database[desc.Name] then
-                local root = desc:FindFirstChild("HumanoidRootPart") or desc.PrimaryPart
-                if root then
-                    local prompt, pos = findPromptInPodium(desc.Parent)
-                    if not prompt and desc.Parent.Parent then
-                        prompt, pos = findPromptInPodium(desc.Parent.Parent)
-                    end
-                    if prompt then
-                        table.insert(t, {
-                            prompt = prompt,
-                            position = pos,
-                            petName = desc.Name,
-                            petValue = Database[desc.Name]
-                        })
-                    end
-                end
-            end
-        end
-    end
-    return t
-end
-
 local function getPriorityTarget()
     local PS = getgenv().PrioritySystem
     if not PS or not PS.SelectedData then return nil end
@@ -157,63 +517,37 @@ local function getPriorityTarget()
     if not podium then return nil end
     local prompt, pos = findPromptInPodium(podium)
     if prompt then
-        return { prompt = prompt, position = pos, petName = d.name or "?", petValue = d.genValue or 0 }
+        return { prompt = prompt, position = pos, petName = d.name or "?", petValue = d.genValue or 0, uid = d.plot .. "_" .. tostring(d.slot) }
     end
     return nil
 end
 
+-- Zielbestimmung: nutzt PrioritySystem oder das neue LuminaAutoSteal-System
 local function getTarget()
-    local hrp = getHRP()
-    if not hrp then return nil end
-    if AG.Mode == "Priority" then return getPriorityTarget() end
-    local targets = getAllTargets()
-    if #targets == 0 then return nil end
-    if AG.Mode == "Nearest" then
-        local best, min = nil, math.huge
-        for _, x in ipairs(targets) do
-            local dist = (hrp.Position - x.position).Magnitude
-            if dist < min then min = dist best = x end
-        end
-        return best
-    else
-        local best, max = nil, -1
-        for _, x in ipairs(targets) do
-            if x.petValue > max then max = x.petValue best = x end
-        end
-        return best
+    if AG.Mode == "Priority" then
+        return getPriorityTarget()
     end
+
+    local LAS = getgenv().LuminaAutoSteal
+    if not LAS then return nil end
+
+    local nearest = LAS.GetNearestAnimal()
+    if not nearest then return nil end
+    if not LAS.ShouldSteal(nearest) then return nil end
+
+    local prompt = LAS.FindPrompt(nearest)
+    if not prompt then return nil end
+
+    return {
+        prompt = prompt,
+        position = nearest.worldPosition,
+        petName = nearest.name or "?",
+        petValue = Database[nearest.name] or 0,
+        uid = nearest.uid
+    }
 end
 
-local function firePrompt(prompt)
-    if not prompt or not prompt.Parent then return false end
-    if fireproximityprompt then
-        pcall(fireproximityprompt, prompt, 1)
-        return true
-    end
-    local ok, conns = pcall(getconnections, prompt.Triggered)
-    if ok and conns then
-        for _, c in ipairs(conns) do
-            if c.Function then pcall(c.Function) end
-        end
-        return true
-    end
-    local ok2, conns2 = pcall(getconnections, prompt.PromptButtonHoldBegan)
-    if ok2 and conns2 then
-        for _, c in ipairs(conns2) do
-            if c.Function then pcall(c.Function) end
-        end
-        task.wait(prompt.HoldDuration or 1)
-        local ok3, conns3 = pcall(getconnections, prompt.Triggered)
-        if ok3 and conns3 then
-            for _, c in ipairs(conns3) do
-                if c.Function then pcall(c.Function) end
-            end
-        end
-        return true
-    end
-    return false
-end
-
+-- DetectSteal bleibt, um StealCount zu erhöhen
 local lastStealCount = 0
 local function detectSteal()
     local bp = LocalPlayer:FindFirstChild("Backpack")
@@ -252,8 +586,9 @@ pcall(function()
     end
 end)
 
+-- Serverbestätigung für AutoTurnOnNearPriority
 local function isServerConfirmedNearPriority()
-    local hrp = getHRP()
+    local hrp = getHRP_Old()
     if not hrp then return false end
     local prio = getPriorityTarget()
     if not prio or not prio.position then return false end
@@ -270,35 +605,56 @@ local function isServerConfirmedNearPriority()
     return false
 end
 
-local thread = coroutine.create(function()
+-- Neuer Steal-Loop: ruft nur noch LuminaAutoSteal.AttemptSteal auf
+local thread
+thread = coroutine.create(function()
     while AG.Running do
         local success, err = pcall(function()
             if not AG.Active then
                 AG.IsStealing = false
                 AG.CurrentPetName = ""
                 AG.StealProgress = 0
+                getgenv().LuminaAutoSteal.Stop()
                 return
             end
+
+            local LAS = getgenv().LuminaAutoSteal
+            if not LAS then return end
+
             local target = getTarget()
             if not target or not target.prompt or not target.prompt.Parent then
                 AG.IsStealing = false
                 AG.CurrentPetName = ""
+                LAS.Stop()
                 return
             end
+
+            -- Start AutoSteal-Loop (Nearest im LAS, Priority handled via getTarget)
+            LAS.Start()
+
             AG.IsStealing = true
             AG.CurrentPetName = target.petName
             AG.StealProgress = 0
-            firePrompt(target.prompt)
+
+            -- Manuell den Attempt auslösen (Priority-Fall)
+            if AG.Mode == "Priority" then
+                LAS.AttemptSteal(target.prompt, {uid = target.uid, worldPosition = target.position, name = target.petName})
+            end
+
             local startTime = tick()
             local lastRefire = startTime
+
             while tick() - startTime < AG.StealDuration do
                 AG.StealProgress = (tick() - startTime) / AG.StealDuration
+
+                -- Priority: refire prompt wie vorher
                 if AG.Mode == "Priority" and target.prompt and target.prompt.Parent then
                     if tick() - lastRefire >= 0.1 then
-                        firePrompt(target.prompt)
+                        LAS.AttemptSteal(target.prompt, {uid = target.uid, worldPosition = target.position, name = target.petName})
                         lastRefire = tick()
                     end
                 end
+
                 if detectSteal() then
                     AG.StealCount = AG.StealCount + 1
                     AG.StealProgress = 1
@@ -307,6 +663,7 @@ local thread = coroutine.create(function()
                 if not target.prompt or not target.prompt.Parent then break end
                 task.wait(1/60)
             end
+
             AG.StealProgress = 1
             task.wait(0.1)
             AG.IsStealing = false
@@ -326,18 +683,21 @@ task.spawn(function()
                 while AG.Running do
                     pcall(function()
                         if AG.Active then
+                            local LAS = getgenv().LuminaAutoSteal
+                            if not LAS then return end
+
                             local target = getTarget()
                             if target and target.prompt and target.prompt.Parent then
+                                LAS.Start()
                                 AG.IsStealing = true
                                 AG.CurrentPetName = target.petName
-                                firePrompt(target.prompt)
                                 local st = tick()
                                 local lastRefire = st
                                 while tick() - st < AG.StealDuration do
                                     AG.StealProgress = (tick() - st) / AG.StealDuration
                                     if AG.Mode == "Priority" and target.prompt and target.prompt.Parent then
                                         if tick() - lastRefire >= 0.1 then
-                                            firePrompt(target.prompt)
+                                            LAS.AttemptSteal(target.prompt, {uid = target.uid, worldPosition = target.position, name = target.petName})
                                             lastRefire = tick()
                                         end
                                     end
@@ -363,7 +723,7 @@ task.spawn(function()
 end)
 
 -- ============================================
--- GUI
+-- GUI (unverändert, nur auf AG-Variablen)
 -- ============================================
 
 local gui = LocalPlayer:WaitForChild("PlayerGui")
@@ -387,9 +747,7 @@ Main.Parent = Screen
 Instance.new("UICorner", Main).CornerRadius = UDim.new(0, 10)
 Instance.new("UIStroke", Main).Color = Color3.fromRGB(35, 35, 40)
 
--- ============================================
 -- OPEN BUTTON
--- ============================================
 local OpenButton = Instance.new("TextButton")
 OpenButton.Name             = "OpenButton"
 OpenButton.Size             = UDim2.new(0, 150, 0, 32)
@@ -446,10 +804,7 @@ UserInputService.InputEnded:Connect(function(i)
     end
 end)
 
--- ============================================
--- PANEL HEADER
--- ============================================
-
+-- HEADER
 local Title = Instance.new("TextLabel")
 Title.Size = UDim2.new(1, -70, 0, 36)
 Title.Position = UDim2.new(0, 14, 0, 4)
@@ -503,10 +858,7 @@ Div.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
 Div.BorderSizePixel = 0
 Div.Parent = Main
 
--- ============================================
 -- TOGGLE BUTTONS
--- ============================================
-
 local function MakeBtn(name, y)
     local h = Instance.new("Frame")
     h.Size = UDim2.new(0.9, 0, 0, 36)
@@ -603,10 +955,7 @@ autoBtn.MouseButton1Click:Connect(function()
     updAuto(); SaveSettings()
 end)
 
--- ============================================
 -- STATUS BAR
--- ============================================
-
 local Bar = Instance.new("Frame")
 Bar.Size = UDim2.new(0.9, 0, 0, 28)
 Bar.Position = UDim2.new(0.05, 0, 0, 226)
@@ -664,10 +1013,7 @@ Pct.TextSize = 10
 Pct.TextXAlignment = Enum.TextXAlignment.Right
 Pct.Parent = Bar
 
--- ============================================
 -- SETTINGS SECTION
--- ============================================
-
 local SettingsDivider = Instance.new("Frame", Main)
 SettingsDivider.Size             = UDim2.new(0.9, 0, 0, 1)
 SettingsDivider.Position         = UDim2.new(0.05, 0, 0, 262)
@@ -751,7 +1097,7 @@ AutoOpenBtn.MouseButton1Click:Connect(function()
     SaveSettings()
 end)
 
--- GUI Scale Slider with TextBox
+-- GUI Scale Slider
 local GuiScaleFrame = Instance.new("Frame")
 GuiScaleFrame.Size             = UDim2.new(0.9, 0, 0, 36)
 GuiScaleFrame.Position         = UDim2.new(0.05, 0, 0, 328)
@@ -893,16 +1239,13 @@ UserInputService.InputEnded:Connect(function(input)
     end
 end)
 
--- Finale Hoehe
 Main.Size = UDim2.new(0, 270, 0, 372)
 
--- Slider initial
 task.defer(function()
     local alpha = (AG.GuiScale - 20) / (100 - 20)
     setGuiScaleFromAlpha(alpha, true)
 end)
 
--- Auto Open beim Start
 task.defer(function()
     if not AG.AutoOpenOnLoad then
         Main.Visible = false
@@ -913,10 +1256,7 @@ task.defer(function()
     end
 end)
 
--- ============================================
 -- STATUS LOOP
--- ============================================
-
 task.spawn(function()
     while AG.Running and Screen and Screen.Parent do
         Count.Text = tostring(AG.StealCount)
@@ -954,10 +1294,7 @@ task.spawn(function()
     end
 end)
 
--- ============================================
--- DRAGGING (blocked when slider active)
--- ============================================
-
+-- DRAGGING
 local drag, ds, sp
 Main.InputBegan:Connect(function(i)
     if isInteractingWithSlider then return end
@@ -977,10 +1314,7 @@ UserInputService.InputEnded:Connect(function(i)
     if i.UserInputType == Enum.UserInputType.MouseButton1 then drag = false end
 end)
 
--- ============================================
 -- KEYBIND
--- ============================================
-
 UserInputService.InputBegan:Connect(function(input, gpe)
     if gpe then return end
     if input.UserInputType == Enum.UserInputType.Keyboard then
@@ -992,26 +1326,23 @@ UserInputService.InputBegan:Connect(function(input, gpe)
     end
 end)
 
--- ============================================
 -- DISABLE
--- ============================================
-
 function AG.Disable()
     AG.Active = false
     AG.Running = false
     SaveSettings()
+    if getgenv().LuminaAutoSteal then
+        getgenv().LuminaAutoSteal.Stop()
+    end
     if AG.ScreenGui then AG.ScreenGui:Destroy() end
 end
 
--- ============================================
--- AUTO TURN ON NEAR PRIORITY
--- ============================================
-
+-- AUTO TURN ON NEAR PRIORITY (unverändert)
 task.spawn(function()
     local wasInRange = false
     while AG.Running do
         if AG.AutoTurnOnNearPriority then
-            local hrp = getHRP()
+            local hrp = getHRP_Old()
             local prio = getPriorityTarget()
             if hrp and prio and prio.position then
                 local hrp2D = Vector2.new(hrp.Position.X, hrp.Position.Z)
@@ -1023,7 +1354,7 @@ task.spawn(function()
                         task.delay(0.1, function()
                             if not AG.Running then return end
                             if not AG.AutoTurnOnNearPriority then return end
-                            local hrp2 = getHRP()
+                            local hrp2 = getHRP_Old()
                             local prio2 = getPriorityTarget()
                             if not hrp2 or not prio2 or not prio2.position then return end
                             local h2D = Vector2.new(hrp2.Position.X, hrp2.Position.Z)
